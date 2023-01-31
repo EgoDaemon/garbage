@@ -15,3 +15,7 @@ git config --global user.name
 git config --global user.email
 git remote add origin https://github.com/EgoDaemon/garbage.git указываем куда заливаем - кажется только один раз, но это не точно
 git push -u origin master (или другое название ветки)
+git clone https://github.com/EgoDaemon/garbage.git - клонировать себе на комп репу (не забыть перейти предварительно в нужную директорию на компе)
+
+
+git pull команда для проверки серверных изменений разрабатываемого файла
