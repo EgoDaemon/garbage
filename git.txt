@@ -13,5 +13,5 @@ git branch <название> - новая ветка
 git checkout <название> переключится на другую ветку
 git config --global user.name 
 git config --global user.email
-git remote add origin https://github.com/EgoDaemon/garbage.git указываем куда заливаем
+git remote add origin https://github.com/EgoDaemon/garbage.git указываем куда заливаем - кажется только один раз, но это не точно
 git push -u origin master (или другое название ветки)
