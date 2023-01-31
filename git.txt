@@ -9,4 +9,8 @@ git rm --cached <file>... отменить отслеживание файла
 что бы добавить все что есть в папке (а не по одному или конкретный) - git add . (с точкой)
 git commit -m "текст......."
 .gitignore не забывать. сюда же можно добавлять исключаемые папки внутри директории
-
+git branch <название> - новая ветка
+git checkout <название> переключится на другую ветку
+git config --global user.name 
+git config --global user.email
+git remote add origin https://github.com/EgoDaemon/garbage.git указываем куда заливаем
