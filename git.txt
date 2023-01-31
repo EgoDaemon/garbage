@@ -14,3 +14,4 @@ git checkout <название> переключится на другую ве�
 git config --global user.name 
 git config --global user.email
 git remote add origin https://github.com/EgoDaemon/garbage.git указываем куда заливаем
+git push -u origin master (или другое название ветки)
