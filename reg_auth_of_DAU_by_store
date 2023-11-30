@@ -1,0 +1,122 @@
+with 
+a as (
+SELECT created_at ,
+          CAST(x5id as varchar) x5id,
+          CASE
+              WHEN user_agent_ext LIKE 'Foodru-ios%' THEN 'ios'
+              WHEN user_agent_ext LIKE 'Foodru-android%' THEN 'android'
+          END platform
+from hive."011_foodru_0000".ods_bknd_users
+WHERE (user_agent_ext LIKE 'Foodru-android%' OR user_agent_ext LIKE 'Foodru-ios%')
+AND created_at >= '2023-11-02'
+AND user_agent_ext is NOT NULL
+),
+
+-- что бы рассплитовать андроид на хуавей и на остальное (включая гугл плей)
+b as (
+select distinct
+CAST(customer_user_id as varchar) customer_user_id, install_app_store
+from  hive."011_foodru_0000".t_dm_x5m_appsflyer_hits_prod
+where platform = 'android'
+and customer_user_id is not null
+),
+
+c as (
+select
+CAST(created_at as DATE) dt, 
+COUNT (distinct(x5id)) as x5id,
+CASE 
+when install_app_store = 'app_gallery' then 'app gallery'
+when platform = 'ios' then 'app store'
+else 'google play or other stores'end store
+from a left join b on x5id = customer_user_id
+group by 1,3
+),
+
+d as (
+select
+dt,
+sum(CASE WHEN store = 'google play or other stores' then x5id END) google_play_or_other_stores,
+sum(CASE WHEN store = 'app gallery' then x5id END) app_gallery,
+sum(CASE WHEN store = 'app store' then x5id END) app_store
+FROM c
+GROUP BY 1
+),
+
+e as (
+select 
+  dt,
+  count(CASE WHEN install_app_store = 'app gallery' then appsflyer_id END) app_gallery_DAU,
+  count(CASE WHEN install_app_store = 'google play or other stores' then appsflyer_id END) google_play_or_other_stores_DAU,
+  count(CASE WHEN install_app_store = 'app store' then appsflyer_id END) app_store_DAU
+    from (
+      select 
+      distinct CAST(event_time as DATE) dt 
+      , appsflyer_id
+      , CASE WHEN platform= 'android' and install_app_store = 'app_gallery' THEN 'app gallery'
+             when platform= 'android' and install_app_store IS NULL THEN 'google play or other stores'
+             when platform= 'ios' THEN 'app store'
+             END install_app_store
+    from  hive."011_foodru_0000".t_dm_x5m_appsflyer_hits_prod
+    where 1=1
+    and appsflyer_id is not null
+    and CAST(event_time as DATE) >= '2023-11-02'
+)
+group by 1
+)
+
+SELECT
+  COALESCE(e.dt, d.dt) dt,
+  app_gallery_DAU,
+  app_gallery,
+  google_play_or_other_stores_DAU,
+  google_play_or_other_stores,
+  app_store_DAU,
+  app_store
+FROM e left join d USING(dt)
+ORDER BY 1 DESC
+
+
+------------------------------------------------
+
+WITH
+a as (
+select 
+  dt,
+  count(CASE WHEN install_app_store = 'app gallery' then customer_user_id END) app_gallery,
+  count(CASE WHEN install_app_store = 'google play or other stores' then customer_user_id END) google_play_or_other_stores
+  from (
+      select 
+      distinct CAST(event_time as DATE) dt 
+      , customer_user_id
+      , CASE WHEN platform= 'android' and install_app_store = 'app_gallery' THEN 'app gallery'
+             when platform= 'android' and install_app_store IS NULL THEN 'google play or other stores'
+             END install_app_store
+    from  hive."011_foodru_0000".t_dm_x5m_appsflyer_hits_prod
+    where 1=1
+    and customer_user_id is not null
+    and CAST(event_time as DATE) >= '2023-11-02'
+    and platform= 'android'
+)
+group by 1
+),
+
+-- авторизованные юзеры айос берем из фб, так как в аппсфл аусы не передаются по айос - заведен баг
+b as (
+select
+CAST(event_date as DATE) dt, 
+count(distinct(COALESCE(x5id, user_id))) as app_store
+from hive."011_foodru_0000".ods_firebase_events
+where event_date >= '2023-11-02'
+and platform = 'ios'
+group by 1
+)
+
+
+SELECT
+  COALESCE(a.dt, b.dt) dt,
+  app_gallery,
+  google_play_or_other_stores,
+  app_store
+FROM a left join b USING(dt)
+ORDER BY 1 DESC
