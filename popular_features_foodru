@@ -1,0 +1,331 @@
+
+----- STEP 1
+
+WITH
+  cte AS 
+  (
+  Select 
+    cast(event_date as date) dt,
+    platform,
+    app_info['version'] version_name,
+    user_pseudo_id,
+    COALESCE(x5id, user_id) as x5id,
+    event_name,
+    event_params['firebase_screen_class']['string_value'] screen,
+    event_params['fd_search_type']['string_value'] search_type,
+    event_timestamp,
+    fd_event_context
+  from  
+    hive."011_foodru_0000".ods_firebase_events
+  Where prt_dt >= '2021-01-01'
+    and length(app_info['version']) = 8 --- что б без дева
+  ),
+  
+  maus AS (
+  select DISTINCT 
+    DATE_TRUNC('MONTH', dt) year_month,
+    platform,
+    version_name,
+    count(distinct user_pseudo_id) mau,
+    count(distinct x5id) mau_registered
+  FROM
+    cte
+  GROUP BY 1,2,3
+  ),
+  
+  
+  fb_all AS (
+  select DISTINCT
+    dt,
+    platform,
+    version_name,
+    user_pseudo_id,
+    x5id,
+    event_name,
+    screen,
+    search_type,
+    event_timestamp  
+  FROM
+    cte
+  where 1=1 AND
+  ((event_name IN ('search', 'fd_search_results', 'fd_ugc_create', 'fd_ugc_send') OR (event_name = 'fd_shopping_list' and fd_event_context = 'add'))
+  OR 
+  (screen IN ('DiscountsView',
+  'FridgeProductsViewController',
+  'FridgeProductView',
+  'FridgeRecipesView',
+  'FridgeRecipeView',
+  'FridgeSearchViewController',
+  'MySalesView',
+  'SearchResultsView',
+  'SearchResultView',
+  'ShoppingListView',
+  'UgcRecipeListView',
+  'UGCRecipeListView',
+  'UGCRecipeView',
+  'UGCRecipeViewController',
+  'WeeklyMenuView',
+  'SearchResultsViewController',
+  'ProfileView',
+  'MainView',
+  'SearchResultView',
+  'SearchViewController',
+  'HomeViewController', 'FavoriteView', 'FilterView'
+  ) and event_name = 'screen_view')
+  )),
+  
+  allss as (
+  SELECT 
+    DATE_TRUNC('MONTH', dt) year_month, 
+    platform, 
+    version_name,
+    CASE
+    when (event_name = 'fd_ugc_create' AND screen IN ('HomeViewController', 'UGCRecipeListView','ProfileView','MainView'))THEN 'ugc_recipe_create_ev'
+    when (event_name = 'fd_ugc_send' AND screen IN ('ProfileView','MainView','UGCRecipeView')) THEN  'ugc_recipe_send_ev'
+    when (event_name = 'fd_search_results' AND search_type IN ('standard', 'advanced')
+    AND screen IN ('SearchResultsViewController','SearchViewController','SearchResultView', 'FilterView')) THEN 'search_ev' 
+    when screen LIKE '%hopping%' and event_name = 'screen_view' THEN 'shopping_list_view'
+    when (event_name = 'fd_shopping_list') THEN 'shopping_list_ev'
+    when screen LIKE '%eekly%' and event_name = 'screen_view' THEN 'weekly_menu_view'
+    when (screen LIKE '%iscount%' OR screen LIKE '%MySales%') and event_name = 'screen_view' THEN  'my_discount_view'
+    when (event_name = 'fd_search_results' AND search_type = 'what_to_cook' AND (screen = 'FavoriteView' OR screen LIKE '%ridge%')) THEN 'what_to_cook_ev'
+    END feature_name,
+    event_timestamp,
+    user_pseudo_id,
+    x5id
+  from fb_all),
+  
+  common AS (
+  select
+    year_month,
+    platform, 
+    version_name,
+    feature_name,
+    CASE WHEN feature_name IS NOT NULL AND feature_name LIKE '%view%' THEN count(event_timestamp) END views,
+    CASE WHEN feature_name IS NOT NULL AND feature_name LIKE '%ev%' THEN count(event_timestamp) END events,
+    CASE WHEN feature_name IS NOT NULL THEN count(distinct user_pseudo_id) END users,
+    CASE WHEN feature_name IS NOT NULL THEN count(distinct x5id) END x5id
+  FROM allss
+  GROUP BY 1,2,3,4)
+  
+  select 
+    COALESCE(maus.year_month, common.year_month) year_month,
+    COALESCE(maus.platform, common.platform) client_type,
+    common.version_name version_name,
+    mau,
+    mau_registered,
+    REGEXP_REPLACE(feature_name, '_ev|_view', '') feature_name, 
+    CAST(views as INT) views,
+    CAST(events as INT) events,
+    CAST(users as INT) cntd_users,
+    CAST(x5id as INT)  cntd_users_auth
+  from maus left join common 
+  on maus.year_month = common.year_month 
+  AND maus.platform = common.platform 
+  AND maus.version_name = common.version_name
+  )
+
+------------------------------------------------------------------\
+------------------------------------------------------------------/
+
+create table s3.publichouse.ods_features_non_ver_am as
+
+select * from
+
+(
+WITH
+  cte AS 
+  (
+  Select 
+    cast(event_date as date) dt,
+    platform,
+    user_pseudo_id,
+    COALESCE(x5id, user_id) as x5id,
+    event_name,
+    event_params['firebase_screen_class']['string_value'] screen,
+    event_params['fd_search_type']['string_value'] search_type,
+    event_timestamp,
+    fd_event_context
+  from  
+    hive."011_foodru_0000".ods_firebase_events
+  Where prt_dt >= '2021-01-01'
+    and length(app_info['version']) = 8 --- что б без дева
+  ),
+  
+  maus AS (
+  select DISTINCT 
+    DATE_TRUNC('MONTH', dt) year_month,
+    platform,
+    count(distinct user_pseudo_id) mau,
+    count(distinct x5id) mau_registered
+  FROM
+    cte
+  GROUP BY 1,2
+  ),
+  
+  
+  fb_all AS (
+  select DISTINCT
+    dt,
+    platform,
+    user_pseudo_id,
+    x5id,
+    event_name,
+    screen,
+    search_type,
+    event_timestamp  
+  FROM
+    cte
+  where 1=1 AND
+  ((event_name IN ('search', 'fd_search_results', 'fd_ugc_create', 'fd_ugc_send') OR (event_name = 'fd_shopping_list' and fd_event_context = 'add'))
+  OR 
+  (screen IN ('DiscountsView',
+  'FridgeProductsViewController',
+  'FridgeProductView',
+  'FridgeRecipesView',
+  'FridgeRecipeView',
+  'FridgeSearchViewController',
+  'MySalesView',
+  'SearchResultsView',
+  'SearchResultView',
+  'ShoppingListView',
+  'UgcRecipeListView',
+  'UGCRecipeListView',
+  'UGCRecipeView',
+  'UGCRecipeViewController',
+  'WeeklyMenuView',
+  'SearchResultsViewController',
+  'ProfileView',
+  'MainView',
+  'SearchResultView',
+  'SearchViewController',
+  'HomeViewController', 'FavoriteView', 'FilterView'
+  ) and event_name = 'screen_view')
+  )),
+  
+  allss as (
+  SELECT 
+    DATE_TRUNC('MONTH', dt) year_month, 
+    platform, 
+    CASE
+    when (event_name = 'fd_ugc_create' AND screen IN ('HomeViewController', 'UGCRecipeListView','ProfileView','MainView'))THEN 'ugc_recipe_create_ev'
+    when (event_name = 'fd_ugc_send' AND screen IN ('ProfileView','MainView','UGCRecipeView')) THEN  'ugc_recipe_send_ev'
+    when (event_name = 'fd_search_results' AND search_type IN ('standard', 'advanced')
+    AND screen IN ('SearchResultsViewController','SearchViewController','SearchResultView', 'FilterView')) THEN 'search_ev' 
+    when screen LIKE '%hopping%' and event_name = 'screen_view' THEN 'shopping_list_view'
+    when (event_name = 'fd_shopping_list') THEN 'shopping_list_ev'
+    when screen LIKE '%eekly%' and event_name = 'screen_view' THEN 'weekly_menu_view'
+    when (screen LIKE '%iscount%' OR screen LIKE '%MySales%') and event_name = 'screen_view' THEN  'my_discount_view'
+    when (event_name = 'fd_search_results' AND search_type = 'what_to_cook' AND (screen = 'FavoriteView' OR screen LIKE '%ridge%')) THEN 'what_to_cook_ev'
+    END feature_name,
+    event_timestamp,
+    user_pseudo_id,
+    x5id
+  from fb_all),
+  
+  common AS (
+  select
+    year_month,
+    platform, 
+    feature_name,
+    CASE WHEN feature_name IS NOT NULL AND feature_name LIKE '%view%' THEN count(event_timestamp) END views,
+    CASE WHEN feature_name IS NOT NULL AND feature_name LIKE '%ev%' THEN count(event_timestamp) END events,
+    CASE WHEN feature_name IS NOT NULL THEN count(distinct user_pseudo_id) END users,
+    CASE WHEN feature_name IS NOT NULL THEN count(distinct x5id) END x5id
+  FROM allss
+  GROUP BY 1,2,3)
+  
+  select 
+    COALESCE(maus.year_month, common.year_month) year_month,
+    COALESCE(maus.platform, common.platform) client_type,
+    mau,
+    mau_registered,
+    REGEXP_REPLACE(feature_name, '_ev|_view', '') feature_name, 
+    CAST(views as INT) views,
+    CAST(events as INT) events,
+    CAST(users as INT) cntd_users,
+    CAST(x5id as INT)  cntd_users_auth
+  from maus left join common 
+  on maus.year_month = common.year_month 
+  AND maus.platform = common.platform 
+
+ ----- STEP 2
+ ----------------->
+
+
+  WITH 
+calen AS (
+select
+DATE_TRUNC('MONTH', date_ss) dt,
+monthname month_name,
+months_before,
+"month" as month_num,
+REPLACE(SUBSTR((date_ss), 1, 7), '-','.') year_month
+from hive."011_foodru_0000".t_dct_calendar
+),
+
+conctd AS (
+select DISTINCT
+COALESCE(calen.dt, source.year_month) as dt,
+month_name,
+months_before,
+month_num,
+calen.year_month year_month,
+platform,
+version_name,
+mau,
+mau_registered,
+aggr_type,
+events_or_view,
+cntd_users,
+cntd_users_auth
+from s3.publichouse.features_source_am AS source
+left join calen on calen.dt = source.year_month
+order by 1 desc, 6, 7, 10
+)
+
+select 
+dt,
+month_name,
+months_before,
+month_num,
+year_month,
+platform,
+version_name,
+mau,
+mau_registered,
+sum(CASE WHEN feature_name = 'my_discounts' then events_or_view END) my_discounts,
+sum(CASE WHEN feature_name = 'my_discounts' then cntd_users END) my_discounts_cntd_users,
+sum(CASE WHEN feature_name = 'my_discounts' then cntd_users_auth END) my_discounts_users_auth,
+
+sum(CASE WHEN feature_name = 'weekly_menu' then events_or_view END) weekly_menu,
+sum(CASE WHEN feature_name = 'weekly_menu' then cntd_users END) weekly_menu_cntd_users,
+sum(CASE WHEN feature_name = 'weekly_menu' then cntd_users_auth END) weekly_menu_cntd_users_auth,
+
+sum(CASE WHEN feature_name = 'search' then events_or_view END) search_results_main_ev,
+sum(CASE WHEN feature_name = 'search' then cntd_users END) search_results_main_ev_cntd_users,
+sum(CASE WHEN feature_name = 'search' then cntd_users_auth END) search_results_main_ev_cntd_users_auth,
+
+sum(CASE WHEN feature_name = 'what_to_cook' then events_or_view END) search_results_what_to_cook_ev,
+sum(CASE WHEN feature_name = 'what_to_cook' then cntd_users END) search_results_what_to_cook_ev_cntd_users,
+sum(CASE WHEN feature_name = 'what_to_cook' then cntd_users_auth END) search_results_what_to_cook_ev_cntd_users_auth,
+
+sum(CASE WHEN feature_name = 'shopping_list' then events_or_view END) shopping_list_ev,
+sum(CASE WHEN feature_name = 'shopping_list' then cntd_users END) shopping_list_ev_cntd_users,
+sum(CASE WHEN feature_name = 'shopping_list' then cntd_users_auth END) shopping_list_ev_cntd_users_auth,
+
+sum(CASE WHEN feature_name = 'shopping_list' then events_or_view END) shopping_veiws,
+sum(CASE WHEN feature_name = 'shopping_list' then cntd_users END) shopping_veiws_cntd_users,
+sum(CASE WHEN feature_name = 'shopping_list' then cntd_users_auth END) shopping_veiws_cntd_users_auth,
+
+sum(CASE WHEN feature_name = 'ugc_create' then events_or_view END) ugc_create_ev,
+sum(CASE WHEN feature_name = 'ugc_create' then cntd_users END) ugc_create_ev_cntd_users,
+sum(CASE WHEN feature_name = 'ugc_create' then cntd_users_auth END) ugc_create_ev_cntd_users_auth,
+
+sum(CASE WHEN feature_name = 'ugc_send' then events_or_view END) ugc_send_ev,
+sum(CASE WHEN feature_name = 'ugc_send' then cntd_users END) ugc_send_ev_cntd_users,
+sum(CASE WHEN feature_name = 'ugc_send' then cntd_users_auth END) ugc_send_ev_cntd_users_auth
+
+
+from conctd
+group by 1,2,3,4,5,6,7,8,9
