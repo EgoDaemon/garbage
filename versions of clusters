@@ -1,0 +1,309 @@
+select dt, x5id, types, val, 
+case when mx between 1 and 50 then ntile(1) over(partition by dt, types order by dr)
+     when mx between 51 and 100 then ntile(3) over(partition by dt, types order by dr)
+     when mx between 101 and 250 then  ntile(5) over(partition by dt, types order by dr)
+     when mx between 251 and 500 then  ntile(7) over(partition by dt, types order by dr) end claster 
+
+from (
+
+  select *,
+  max(dr) over(partition by dt, types) mx
+  
+  from 
+  (
+    select
+    *,
+    dense_rank() over(partition by dt, types order by val) dr
+    from s3."publichouse".users_pers_stat_content_am_v2
+    )
+  order by 1,3
+)
+
+--------------------
+
+with 
+a as (
+select year_to_date, x5id, types, sum(val) val 
+from s3."publichouse".users_pers_stat_content_am_v2 
+left join (select date_ss, year_to_date from "hive.011_foodru_0000".t_dct_calendar) on CAST(date_ss as date) = CAST(dt as date)
+group by 1,2,3 order by 2,3
+),
+
+b as (
+select
+    *,
+    dense_rank() over(partition by year_to_date, types order by val) dr
+    from a order by 2,3
+),
+
+
+c as (
+  select *,
+  max(dr) over(partition by year_to_date, types) mx
+  from b 
+)
+
+select year_to_date, x5id, types, val, 
+case when mx between 1 and 100 then ntile(1) over(partition by year_to_date, types order by dr)
+     when mx between 101 and 500 then ntile(3) over(partition by year_to_date, types order by dr)
+     when mx between 501 and 1000 then  ntile(5) over(partition by year_to_date, types order by dr)
+     when mx >= 1001 then  ntile(7) over(partition by year_to_date, types order by dr) end claster
+from c
+where types LIKE '%ugc%'
+
+------------------------
+
+SELECT
+
+x5id,
+ugc_recipes_made,
+--CASE WHEN ugc_recipes_made IS NOT NULL OR ugc_recipes_made <> 0 THEN round(100*PERCENT_RANK() OVER(PARTITION BY dt ORDER BY ugc_recipes_made),0) END pr,
+--CASE WHEN ugc_recipes_made IS NOT NULL OR ugc_recipes_made <> 0 THEN round(100*CUME_DIST() OVER(PARTITION BY dt ORDER BY ugc_recipes_made),0) END cd,
+CASE WHEN ugc_recipes_made IS NOT NULL THEN NTILE(4) OVER(PARTITION BY CASE WHEN ugc_recipes_reach IS NULL THEN 0 ELSE 1 END ORDER BY ugc_recipes_made DESC) END nt,
+CASE WHEN ugc_recipes_made IS NOT NULL THEN row_number() OVER(ORDER BY ugc_recipes_made) END rn,
+
+ugc_recipes_comments,
+-- CASE WHEN ugc_recipes_comments IS NOT NULL OR ugc_recipes_comments <> 0 THEN round(100*PERCENT_RANK() OVER(PARTITION BY dt ORDER BY ugc_recipes_comments),0) END W2,
+--CASE WHEN ugc_recipes_comments IS NOT NULL OR ugc_recipes_comments <> 0 THEN round(100*CUME_DIST() OVER(ORDER BY ugc_recipes_comments),0) END cd2,
+CASE WHEN ugc_recipes_comments IS NOT NULL THEN NTILE(4) OVER(ORDER BY ugc_recipes_comments DESC) END nt2,
+CASE WHEN ugc_recipes_comments IS NOT NULL THEN row_number() OVER(ORDER BY ugc_recipes_comments) END rn2,
+CASE WHEN ugc_recipes_comments IS NOT NULL THEN rank() OVER(ORDER BY ugc_recipes_comments) END rk2,
+
+ugc_recipes_reach,
+CASE WHEN ugc_recipes_reach IS NOT NULL THEN NTILE(4) OVER(ORDER BY ugc_recipes_reach) END nt3,
+    CASE 
+        WHEN ugc_recipes_reach IS NULL THEN NULL 
+    ELSE NTILE(4) OVER (
+        PARTITION BY CASE WHEN ugc_recipes_reach IS NULL THEN 0 ELSE 1 END 
+        ORDER BY ugc_recipes_reach) 
+    END AS Q
+
+FROM (
+select 
+  dt
+, x5id
+, CASE WHEN ugc_recipes_reach IS NULL OR ugc_recipes_reach=0 THEN NULL ELSE ugc_recipes_reach END AS ugc_recipes_reach
+, CASE WHEN ugc_recipes_made IS NULL OR ugc_recipes_made=0 THEN NULL ELSE ugc_recipes_made END AS ugc_recipes_made
+, CASE WHEN ugc_recipes_comments IS NULL OR ugc_recipes_comments=0 THEN NULL ELSE ugc_recipes_comments END AS ugc_recipes_comments
+, ugc_recipes_in_favorites_add
+, self_viewed_materials
+, self_favotites_added
+, self_comments_published
+
+from "s3.publichouse".users_pers_stat_content_am
+--where dt >= '2023-08-14'
+)
+
+---------------
+
+with a as (
+    select
+        x5id,
+        coalesce(sum(ugc_recipes_comments), 0) as comm,
+        coalesce(sum(ugc_recipes_in_favorites_add), 0) as fav
+    from s3.publichouse."users_pers_stat_content_am"
+    GROUP By x5id
+),
+b as (
+    SELECT
+    x5id,
+    case when comm > 0 then comm else null end comm,
+    case when fav > 0 then fav else null end fav
+    from a
+),
+c as (
+    select
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY comm ASC) as comm_q25,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY comm ASC) as comm_q50,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY comm ASC) as comm_q75,
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY fav ASC) as fav_q25,
+        PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY fav ASC) as fav_q50,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY fav ASC) as fav_q75
+    from b
+),
+final as (
+    select
+        x5id,
+        comm,
+        comm_q25,
+        comm_q50,
+        case
+            when b.comm is null then 0
+            when b.comm <= c.comm_q25 then 1
+            when c.comm_q25 < b.comm and b.comm <= c.comm_q50 then 2
+            when c.comm_q50 < b.comm and b.comm <= c.comm_q75 then 3
+            when b.comm > c.comm_q75 then 4
+        end as cluster_comm,
+        case
+            when b.fav is null then 0
+            when b.fav <= c.fav_q25 then 1
+            when c.fav_q25 < b.fav and b.fav <= c.fav_q50 then 2
+            when c.fav_q50 < b.fav and b.fav <= c.fav_q75 then 3
+            when b.fav > c.fav_q75 then 4
+        end as cluster_fav
+    from b, c
+)
+SELECT cluster_fav, count(*) from final
+group by 1
+
+-----------------------
+
+WITH 
+A AS (
+SELECT
+dt,
+x5id,
+ugc_recipes_made,
+round((LOG(ugc_recipes_made)+1),2) logg_ugc_recipes_made,
+ugc_recipes_reach,
+round((LOG(ugc_recipes_reach)+1),2) logg_ugc_recipes_reach,
+ugc_recipes_comments,
+round((LOG(ugc_recipes_comments)+1),2) logg_ugc_recipes_comments, -- `couse log(1) = 0 
+ugc_recipes_in_favorites_add,
+round((LOG(ugc_recipes_in_favorites_add)+1),2)  logg_ugc_recipes_in_favorites_add,
+self_viewed_materials,
+round((LOG(self_viewed_materials)+1),2)  logg_self_viewed_materials,
+self_favotites_added,
+round((LOG(self_favotites_added)+1),2)  logg_self_favotites_added,
+self_comments_published,
+round((LOG(self_comments_published)+1),2)  logg_self_comments_published
+
+FROM (SELECT
+  dt,
+  x5id,
+  case when ugc_recipes_made = 0 THEN NULL ELSE ugc_recipes_made END ugc_recipes_made,
+  case when ugc_recipes_reach = 0 THEN NULL ELSE ugc_recipes_reach END ugc_recipes_reach,
+  case when ugc_recipes_comments = 0 THEN NULL ELSE ugc_recipes_comments END ugc_recipes_comments,
+  case when ugc_recipes_in_favorites_add = 0 THEN NULL ELSE ugc_recipes_in_favorites_add END ugc_recipes_in_favorites_add,
+  case when self_viewed_materials = 0 THEN NULL ELSE self_viewed_materials END self_viewed_materials,
+  case when self_favotites_added = 0 THEN NULL ELSE self_favotites_added END self_favotites_added,
+  case when self_comments_published = 0 THEN NULL ELSE self_comments_published END self_comments_published
+FROM s3.publichouse."users_pers_stat_content_am")
+),
+
+
+B AS (
+SELECT
+  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY logg_ugc_recipes_made ASC) as made_q25,
+  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY logg_ugc_recipes_made ASC) as made_q50,
+  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY logg_ugc_recipes_made ASC) as made_q75,
+  
+  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY logg_ugc_recipes_reach ASC) as reach_q25,
+  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY logg_ugc_recipes_reach ASC) as reach_q50,
+  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY logg_ugc_recipes_reach ASC) as reach_q75,
+  
+  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY logg_ugc_recipes_comments ASC) as comm_q25,
+  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY logg_ugc_recipes_comments ASC) as comm_q50,
+  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY logg_ugc_recipes_comments ASC) as comm_q75,
+  
+  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY logg_ugc_recipes_in_favorites_add ASC) as fav_q25,
+  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY logg_ugc_recipes_in_favorites_add ASC) as fav_q50,
+  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY logg_ugc_recipes_in_favorites_add ASC) as fav_q75,
+  
+  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY logg_self_viewed_materials ASC) as slf_mat_q25,
+  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY logg_self_viewed_materials ASC) as slf_mat_q50,
+  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY logg_self_viewed_materials ASC) as slf_mat_q75,
+  
+  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY logg_self_favotites_added ASC) as slf_fav_q25,
+  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY logg_self_favotites_added ASC) as slf_fav_q50,
+  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY logg_self_favotites_added ASC) as slf_fav_q75,
+  
+  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY logg_self_comments_published ASC) as sfl_pub_q25,
+  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY logg_self_comments_published ASC) as sfl_pub_q50,
+  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY logg_self_comments_published ASC) as sfl_pub_q75
+  
+
+FROM A
+)
+
+SELECT
+  dt,
+  x5id,
+        ugc_recipes_made,
+        case
+            when logg_ugc_recipes_made is null then 0
+            when logg_ugc_recipes_made <= B.made_q25 then 1
+            when made_q25 < logg_ugc_recipes_made and logg_ugc_recipes_made <= made_q50 then 2
+            when made_q50 < logg_ugc_recipes_made and logg_ugc_recipes_made <= made_q75 then 3
+            when logg_ugc_recipes_made > made_q75 then 4
+        end as cluster_made,
+        
+        ugc_recipes_reach,
+        case
+            when logg_ugc_recipes_reach is null then 0
+            when logg_ugc_recipes_reach <= B.reach_q25 then 1
+            when reach_q25 < logg_ugc_recipes_reach and logg_ugc_recipes_reach <= reach_q50 then 2
+            when reach_q50 < logg_ugc_recipes_reach and logg_ugc_recipes_reach <= reach_q75 then 3
+            when logg_ugc_recipes_reach > reach_q75 then 4
+        end as cluster_reach,
+        
+        ugc_recipes_comments,
+        case
+            when logg_ugc_recipes_comments is null then 0
+            when logg_ugc_recipes_comments <= B.comm_q25 then 1
+            when comm_q25 < logg_ugc_recipes_comments and logg_ugc_recipes_comments <= comm_q50 then 2
+            when comm_q50 < logg_ugc_recipes_comments and logg_ugc_recipes_comments <= comm_q75 then 3
+            when logg_ugc_recipes_comments > comm_q75 then 4
+        end as cluster_comm,
+        
+        ugc_recipes_in_favorites_add,
+        case
+            when logg_ugc_recipes_in_favorites_add is null then 0
+            when logg_ugc_recipes_in_favorites_add <= fav_q25 then 1
+            when fav_q25 < logg_ugc_recipes_in_favorites_add and logg_ugc_recipes_in_favorites_add <= fav_q50 then 2
+            when fav_q50 < logg_ugc_recipes_in_favorites_add and logg_ugc_recipes_in_favorites_add <= fav_q75 then 3
+            when logg_ugc_recipes_in_favorites_add > fav_q75 then 4
+        end as cluster_fav,
+        
+        self_viewed_materials,
+        case
+            when logg_self_viewed_materials is null then 0
+            when logg_self_viewed_materials <= slf_mat_q25 then 1
+            when slf_mat_q25 < logg_self_viewed_materials and logg_self_viewed_materials <= slf_mat_q50 then 2
+            when slf_mat_q50 < logg_self_viewed_materials and logg_self_viewed_materials <= slf_mat_q75 then 3
+            when logg_self_viewed_materials > slf_mat_q75 then 4
+        end as cluster_slf_vw_mat,
+        
+        
+        self_favotites_added,
+        case
+            when logg_self_favotites_added is null then 0
+            when logg_self_favotites_added <= slf_fav_q25 then 1
+            when slf_fav_q25 < logg_self_favotites_added and logg_self_favotites_added <= slf_fav_q50 then 2
+            when slf_fav_q50 < logg_self_favotites_added and logg_self_favotites_added <= slf_fav_q75 then 3
+            when logg_self_favotites_added > slf_fav_q75 then 4
+        end as cluster_slf_fv_add,
+        
+        self_comments_published,
+        case
+            when logg_self_comments_published is null then 0
+            when logg_self_comments_published <= sfl_pub_q25 then 1
+            when sfl_pub_q25 < logg_self_comments_published and logg_self_comments_published <= sfl_pub_q50 then 2
+            when sfl_pub_q50 < logg_self_comments_published and logg_self_comments_published <= sfl_pub_q75 then 3
+            when logg_self_comments_published > sfl_pub_q75 then 4
+        end as cluster_com_pub
+FROM A, B
+
+-----------
+select dt, types, clasters, count(*) dhbdhb from (
+with 
+a as (
+select *,
+count(*) over(partition by dt, types) mx
+from s3."publichouse".users_pers_stat_content_am_v2)
+
+
+select *,
+floor(mx * 0.9) - floor(mx * 0.1) as new_mx,
+case 
+  when rn < floor(mx * 0.1) then 0
+  when rn >= floor(mx * 0.1) and rn < floor((floor(mx * 0.9) - floor(mx * 0.1))/3) then 1
+  when rn >= floor((floor(mx * 0.9) - floor(mx * 0.1))/3) and rn < (2 * floor((floor(mx * 0.9) - floor(mx * 0.1))/3)) then 2
+  when rn >= (2 * floor((floor(mx * 0.9) - floor(mx * 0.1))/3)) and rn < floor(mx * 0.9) then 3
+  when rn >= floor(mx * 0.9) then 4 
+end clasters
+from a
+order by dt, types, rn
+)
+group by 1,2,3
+order by 1,2,3
